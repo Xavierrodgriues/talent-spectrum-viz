@@ -32,8 +32,9 @@ function Index() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [countdown, setCountdown] = useState(60);
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!role.trim()) {
       toast.error("Please enter a target role");
       return;
@@ -45,10 +46,58 @@ function Index() {
     }
     setLoading(true);
     setResult(null);
-    setTimeout(() => {
-      setResult(analyze(role.trim(), y));
+    setCountdown(60);
+    
+    const timerInterval = setInterval(() => {
+      setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    
+    try {
+      const response = await fetch("http://localhost:5000/api/role-info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: role.trim() }),
+      });
+
+      if (response.status === 404) {
+        toast.error("No role found");
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch data");
+      }
+
+      const data = await response.json();
+      
+      const topSkills = Array.isArray(data.top_skills) ? data.top_skills : [];
+      const resps = Array.isArray(data.common_responsibilities) ? data.common_responsibilities : [];
+      const bullets = Array.isArray(data.resume_bullets) ? data.resume_bullets : [];
+
+      const newResult: AnalysisResult = {
+        role: role.trim(),
+        years: y,
+        level: y < 3 ? "Junior" : y < 8 ? "Senior" : "Staff",
+        skills: topSkills.map((s: string) => ({
+          name: s,
+          score: Math.floor(Math.random() * 20) + 75,
+          min: 60,
+          max: 100
+        })),
+        feedback: resps,
+        covered: [],
+        gaps: [],
+        resumePoints: bullets
+      };
+
+      setResult(newResult);
+    } catch (err) {
+      console.error(err);
+      toast.error("Error analyzing role");
+    } finally {
+      clearInterval(timerInterval);
       setLoading(false);
-    }, 1200);
+    }
   };
 
   const handleCopy = (text: string) => {
@@ -156,7 +205,12 @@ function Index() {
 
         {/* Loading */}
         {loading && (
-          <div className="grid gap-6 md:grid-cols-2 animate-fade-in-up">
+          <div className="space-y-6">
+            <div className="text-center p-6 bg-card border border-primary/20 rounded-xl max-w-sm mx-auto shadow-sm animate-fade-in-up">
+              <div className="text-5xl font-bold text-primary mb-2 tabular-nums">00:{countdown.toString().padStart(2, '0')}</div>
+              <p className="text-sm text-muted-foreground">Analyzing job descriptions with AI...<br/>This may take up to a minute.</p>
+            </div>
+            <div className="grid gap-6 md:grid-cols-2 animate-fade-in-up">
             {[0, 1, 2, 3].map((i) => (
               <Card key={i}>
                 <CardHeader>
@@ -169,6 +223,7 @@ function Index() {
                 </CardContent>
               </Card>
             ))}
+            </div>
           </div>
         )}
 
