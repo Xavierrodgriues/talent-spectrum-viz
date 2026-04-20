@@ -126,13 +126,13 @@ app.post('/api/role-info', async (req, res) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 100000);
 
-    // Send to Ollama (Mistral locally)
+    // Send to Ollama (gemma4:e4b locally)
     const ollamaResponse = await fetch('http://127.0.0.1:11434/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'mistral',
+        model: 'gemma4:e4b',
         prompt: prompt,
         stream: false,
         format: 'json', // Hint to Ollama to output standard JSON
