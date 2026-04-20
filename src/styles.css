@@ -150,7 +150,18 @@
   }
 
   body {
-    background-color: var(--color-background);
+    background: linear-gradient(180deg, oklch(0.99 0.005 270) 0%, oklch(0.97 0.02 275) 100%);
     color: var(--color-foreground);
+    min-height: 100vh;
   }
 }
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes bar-fill {
+  from { width: 0%; }
+}
+.animate-fade-in-up { animation: fade-in-up 0.5s ease-out both; }
+.animate-bar { animation: bar-fill 1s cubic-bezier(0.22, 1, 0.36, 1) both; }
