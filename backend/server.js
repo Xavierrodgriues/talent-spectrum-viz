@@ -61,8 +61,12 @@ app.post('/api/role-info', async (req, res) => {
     const collection = db.collection('jobs_details');
 
     // Search job_title using case-insensitive regex
-    // Fetch only 3-5 matching documents
-    const jobs = await collection.find({ job_title: { $regex: role, $options: 'i' } }).limit(5).toArray();
+    // Use $sample to fetch a random subset of matching documents
+    // This ensures we feed the LLM different JDs each time, varying the output naturally
+    const jobs = await collection.aggregate([
+      { $match: { job_title: { $regex: role, $options: 'i' } } },
+      { $sample: { size: 5 } }
+    ]).toArray();
 
     if (jobs.length === 0) {
       return res.status(404).json({ error: "no role found" });
@@ -95,9 +99,10 @@ app.post('/api/role-info', async (req, res) => {
     // `;
 
     const prompt = `
-      You are a strict JSON generator.
+      You are an expert tech recruiter and a strict JSON generator.
 
-      Analyze the following job descriptions for the role "${role}".
+      Analyze ONLY the following job descriptions for the role "${role}".
+      Your goal is to extract market requirements strictly based on the provided text, and present them in a way that helps a candidate understand *why* the market wants them, so they can align their resume experience section to it.
 
       Return ONLY valid JSON. No text before or after.
 
@@ -109,10 +114,10 @@ app.post('/api/role-info', async (req, res) => {
       }
 
       Rules:
-      - max 5 skills
-      - exactly 10 responsibilities
-      - exactly 2 resume bullets
-      - short and precise
+      - "top_skills": max 5 skills.
+      - "common_responsibilities": exactly 10 responsibilities. Write these as actionable recruiter advice explaining *why* the market needs it (e.g., "Employers highly value multi-cloud flexibility—highlight your experience managing cloud infrastructure across platforms.").
+      - "resume_bullets": exactly 2 resume bullets. Write strong, quantifiable achievements the user can adapt.
+      - Keep it insightful but concise. Do not include random company perks (e.g., "hybrid", "dental", "Tampa").
 
       Job Descriptions:
       ${combinedDescription}
@@ -130,7 +135,10 @@ app.post('/api/role-info', async (req, res) => {
         model: 'mistral',
         prompt: prompt,
         stream: false,
-        format: 'json' // Hint to Ollama to output standard JSON
+        format: 'json', // Hint to Ollama to output standard JSON
+        options: {
+          temperature: 0.9 // Higher temperature adds creativity/variation
+        }
       })
     });
 
