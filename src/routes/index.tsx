@@ -56,11 +56,12 @@ function Index() {
       const response = await fetch("http://localhost:5000/api/role-info", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: role.trim() }),
+        body: JSON.stringify({ role: role.trim(), years: y }),
       });
 
       if (response.status === 404) {
-        toast.error("No role found");
+        const errData = await response.json();
+        toast.error(errData.error || "No role found");
         return;
       }
 
