@@ -77,6 +77,128 @@ function matchesExperience(expStr, userYears) {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// ─── CHUNK TEXT ───────────────────────────────────────────────────────────────
+// Splits a large string into ~CHUNK_SIZE character chunks without breaking words.
+const CHUNK_SIZE = 8000;  // Medium chunks — balance between fewer calls and timeout risk
+const MAX_JOBS   = 5;     // Keep input small so each chunk finishes within timeout
+
+function chunkText(text) {
+  const chunks = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = start + CHUNK_SIZE;
+    if (end < text.length) {
+      // Walk back to the nearest whitespace so we don't cut mid-word
+      while (end > start && !/\s/.test(text[end])) end--;
+      if (end === start) end = start + CHUNK_SIZE; // safety: no whitespace found
+    }
+    chunks.push(text.slice(start, end).trim());
+    start = end;
+  }
+  return chunks.filter(c => c.length > 0);
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+// ─── MERGE CHUNK RESULTS ────────────────────────────────────────────────────
+// Merges the JSON output from multiple LLM chunk calls into one final result.
+function mergeResults(results) {
+  const skillFreq = {};
+  const allResponsibilities = [];
+  const allBullets = [];
+
+  for (const r of results) {
+    if (!r || typeof r !== 'object') continue;
+
+    // Count skill frequency across chunks
+    if (Array.isArray(r.top_skills)) {
+      for (const skill of r.top_skills) {
+        const key = skill.trim().toLowerCase();
+        skillFreq[key] = (skillFreq[key] || { label: skill.trim(), count: 0 });
+        skillFreq[key].count++;
+      }
+    }
+
+    // Collect all responsibilities
+    if (Array.isArray(r.common_responsibilities)) {
+      for (const resp of r.common_responsibilities) {
+        const normalized = resp.trim();
+        if (normalized) allResponsibilities.push(normalized);
+      }
+    }
+
+    // Collect all resume bullets
+    if (Array.isArray(r.resume_bullets)) {
+      for (const bullet of r.resume_bullets) {
+        const normalized = bullet.trim();
+        if (normalized) allBullets.push(normalized);
+      }
+    }
+  }
+
+  // Top 5 skills by frequency
+  const topSkills = Object.values(skillFreq)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5)
+    .map(s => s.label);
+
+  // Deduplicate responsibilities, keep top 10
+  const seenResp = new Set();
+  const uniqueResponsibilities = [];
+  for (const r of allResponsibilities) {
+    const key = r.toLowerCase().slice(0, 60); // compare on first 60 chars
+    if (!seenResp.has(key)) {
+      seenResp.add(key);
+      uniqueResponsibilities.push(r);
+    }
+    if (uniqueResponsibilities.length === 10) break;
+  }
+
+  // Prioritise bullets that contain numbers (quantified achievements), pick 2
+  const quantified = allBullets.filter(b => /\d/.test(b));
+  const nonQuantified = allBullets.filter(b => !/\d/.test(b));
+  const bestBullets = [...quantified, ...nonQuantified].slice(0, 2);
+
+  return {
+    top_skills: topSkills,
+    common_responsibilities: uniqueResponsibilities,
+    resume_bullets: bestBullets,
+  };
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+// ─── SINGLE OLLAMA CALL ─────────────────────────────────────────────────────
+// NOTE: Ollama processes one request at a time — parallel calls just queue up
+// and compete for the GPU, causing timeouts. Always call sequentially.
+async function callLLM(prompt) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000); // 180s per chunk
+  try {
+    const response = await fetch('http://127.0.0.1:11434/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'gemma4:e4b',
+        prompt,
+        stream: false,
+        format: 'json',
+        options: { temperature: 0.3 },
+      })
+    });
+    if (!response.ok) throw new Error(`Ollama request failed: ${response.statusText}`);
+    const data = await response.json();
+    try {
+      return JSON.parse(data.response);
+    } catch {
+      console.warn('Chunk JSON parse failed — storing raw output');
+      return null;
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 // ─── TEST ENDPOINT (No LLM) ───────────────────────────────────────────────────
 // POST /api/search-jobs  Body: { "role": "DevOps Engineer", "years": 7 }
 app.post('/api/search-jobs', async (req, res) => {
@@ -91,9 +213,12 @@ app.post('/api/search-jobs', async (req, res) => {
     const collection = db.collection('indeed_job_details');
 
     // 1. Fetch all docs matching the title (simple regex, no $expr)
-    const titleMatches = await collection
-      .find({ title: { $regex: role, $options: 'i' } })
-      .toArray();
+    const keywords = role.split(" ");
+    const titleMatches = await collection.find({
+      $and: keywords.map(word => ({
+        title: { $regex: word, $options: 'i' }
+      }))
+    }).toArray();
 
     // 2. Filter experience in JavaScript
     const jobs = titleMatches.filter(j => matchesExperience(j.experience, userYears));
@@ -133,9 +258,12 @@ app.post('/api/role-info', async (req, res) => {
     const collection = db.collection('indeed_job_details');
 
     // 1. Fetch all docs matching the title
-    const titleMatches = await collection
-      .find({ title: { $regex: role, $options: 'i' } })
-      .toArray();
+    const keywords = role.split(" ");
+    const titleMatches = await collection.find({
+      $and: keywords.map(word => ({
+        title: { $regex: word, $options: 'i' }
+      }))
+    }).toArray();
 
     // 2. Filter experience in JavaScript using shared matchesExperience()
     const jobs = titleMatches.filter(j => matchesExperience(j.experience, userYears));
@@ -151,150 +279,84 @@ app.post('/api/role-info', async (req, res) => {
 
     console.log(`Found ${jobs.length} matching job(s) for "${role}" (experience filter: ${userYears ?? 'none'} | title matches: ${titleMatches.length})`);
 
-    // Extract and clean ALL matched job descriptions
-    const descriptions = jobs
+    // ── Cap jobs to MAX_JOBS to keep LLM input manageable ──────────────────
+    const cappedJobs = jobs.slice(0, MAX_JOBS);
+    console.log(`Using ${cappedJobs.length} job(s) (capped from ${jobs.length}) for LLM analysis`);
+
+    // ── Build full combined text ────────────────────────────────────────────
+    const fullText = cappedJobs
       .map(job => cleanJobDescription(job.job_description))
       .filter(Boolean)
-      .join("\n\n---\n\n");
+      .join('\n\n---\n\n');
 
-    // Cap to ~8000 chars to stay within LLM context window, but capture more signal from multiple JDs
-    let combinedDescription = descriptions;
-    const MAX_CHARS = 8000;
-    if (combinedDescription.length > MAX_CHARS) {
-      combinedDescription = combinedDescription.substring(0, MAX_CHARS) + "...";
+    // ── Split into word-safe chunks ─────────────────────────────────────────
+    const chunks = chunkText(fullText);
+    console.log(`Total text: ${fullText.length} chars | Split into ${chunks.length} chunk(s)`);
+
+    // ── Build the shared prompt template ───────────────────────────────────
+    const buildPrompt = (chunkText) => `
+      You are an expert tech recruiter and strict JSON generator.
+
+      Analyze the following job descriptions for the role "${role}".
+
+      Candidate experience: ${userYears !== null ? userYears + ' years' : 'not specified'}.
+
+      Your task:
+      Generate feedback based on BOTH:
+      1. Market expectations (from job descriptions)
+      2. Candidate experience level
+
+      IMPORTANT EXPERIENCE RULES:
+
+      - 0–2 years:
+        Use tone: learning, assisting, supporting
+        Avoid: "design", "architect", "lead", "expert", "mastery"
+
+      - 3–5 years:
+        Use tone: implementing, building, working independently
+        Avoid: "enterprise-wide ownership", "deep expertise"
+
+      - 6–8 years:
+        Use tone: designing, optimizing, owning systems
+
+      - 9+ years:
+        Use tone: architecting, leading, scaling systems
+
+      Return ONLY valid JSON.
+
+      Format:
+      {
+        "top_skills": [],
+        "common_responsibilities": [],
+        "resume_bullets": []
+      }
+
+      Rules:
+      - top_skills: max 5
+      - common_responsibilities: exactly 10. These MUST be framed as "Roles and Responsibilities" — professional, actionable duties the candidate should demonstrate (e.g., "Design and implement scalable microservices using Node.js").
+      - Adjust complexity and tone based on the experience level rules above.
+      - resume_bullets: exactly 2. Provide strong, quantifiable bullet points the candidate can add to their resume.
+
+      Job Descriptions:
+      ${chunkText}
+    `;
+
+    // ── Process chunks sequentially (Ollama = single-threaded GPU) ───────────
+    const chunkResults = [];
+    for (let i = 0; i < chunks.length; i++) {
+      console.log(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)...`);
+      const result = await callLLM(buildPrompt(chunks[i]));
+      chunkResults.push(result);
     }
 
-    console.log(`Sending ${combinedDescription.length} chars from ${jobs.length} JD(s) to LLM.`);
-
-    // Structured prompt to ensure JSON output
-    //     const prompt = `
-    // Analyze the following job descriptions for the role of "${role}" and extract the information requested.
-    // Please return the result *only* as a valid JSON object matching the format below. Do not include any explanations, introduction, markdown blocks, or other text outside the JSON.
-
-    // Expected JSON format:
-    // {
-    //   "top_skills": ["skill1", "skill2", "skill3"],
-    //   "common_responsibilities": ["resp1", "resp2", "resp3"],
-    //   "resume_bullets": ["bullet1", "bullet2"]
-    // }
-
-    // Job Descriptions Text:
-    // ${combinedDescription}
-    // `;
-
-    // const prompt = `
-    //   You are an expert tech recruiter and a strict JSON generator.
-
-    //   Analyze ONLY the following job descriptions for the role "${role}".
-    //   Your goal is to extract market requirements strictly based on the provided text, and present them in a way that helps a candidate understand *why* the market wants them, so they can align their resume experience section to it.
-
-    //   Return ONLY valid JSON. No text before or after.
-
-    //   Format:
-    //   {
-    //     "top_skills": [],
-    //     "common_responsibilities": [],
-    //     "resume_bullets": []
-    //   }
-
-    //   Rules:
-    //   - "top_skills": max 5 skills.
-    //   - "common_responsibilities": exactly 10 responsibilities. Write these as actionable recruiter advice explaining *why* the market needs it (e.g., "Employers highly value multi-cloud flexibility—highlight your experience managing cloud infrastructure across platforms.").
-    //   - "resume_bullets": exactly 2 resume bullets. Write strong, quantifiable achievements the user can adapt.
-    //   - Keep it insightful but concise. Do not include random company perks (e.g., "hybrid", "dental", "Tampa").
-
-    //   Job Descriptions:
-    //   ${combinedDescription}
-    //   `;
-
-    const prompt = `
-          You are an expert tech recruiter and strict JSON generator.
-
-          Analyze the following job descriptions for the role "${role}".
-
-          Candidate experience: ${userYears !== null ? userYears + " years" : "not specified"}.
-
-          Your task:
-          Generate feedback based on BOTH:
-          1. Market expectations (from job descriptions)
-          2. Candidate experience level
-
-          IMPORTANT EXPERIENCE RULES:
-
-          - 0–2 years:
-            Use tone: learning, assisting, supporting
-            Avoid: "design", "architect", "lead", "expert", "mastery"
-
-          - 3–5 years:
-            Use tone: implementing, building, working independently
-            Avoid: "enterprise-wide ownership", "deep expertise"
-
-          - 6–8 years:
-            Use tone: designing, optimizing, owning systems
-
-          - 9+ years:
-            Use tone: architecting, leading, scaling systems
-
-          Return ONLY valid JSON.
-
-          Format:
-          {
-            "top_skills": [],
-            "common_responsibilities": [],
-            "resume_bullets": []
-          }
-
-          Rules:
-          - top_skills: max 5
-          - common_responsibilities: exactly 10
-          - Adjust complexity based on experience level
-          - resume_bullets: exactly 2 (match experience level)
-
-          Job Descriptions:
-          ${combinedDescription}
-`;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 100000);
-
-    // Send to Ollama (gemma4:e4b locally)
-    const ollamaResponse = await fetch('http://127.0.0.1:11434/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: 'gemma4:e4b',
-        prompt: prompt,
-        stream: false,
-        format: 'json', // Hint to Ollama to output standard JSON
-        options: {
-          temperature: 0.3 // Higher temperature adds creativity/variation
-        }
-      })
-    });
-
-    clearTimeout(timeout);
-
-    if (!ollamaResponse.ok) {
-      throw new Error(`Ollama request failed: ${ollamaResponse.statusText}`);
-    }
-
-    const data = await ollamaResponse.json();
-    let resultJson;
-
-    try {
-      resultJson = JSON.parse(data.response);
-    } catch (e) {
-      console.warn("Failed to parse JSON directly from model, returning raw response");
-      resultJson = { raw: data.response };
-    }
-
-    console.log(`Successfully generated info for role: ${role}`);
-    res.json(resultJson);
+    // ── Merge all chunk results into one final response ─────────────────────
+    const merged = mergeResults(chunkResults);
+    console.log(`Successfully merged ${chunks.length} chunk(s) for role: ${role}`);
+    res.json(merged);
 
   } catch (error) {
-    console.error("Error processing role info:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Error processing role info:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

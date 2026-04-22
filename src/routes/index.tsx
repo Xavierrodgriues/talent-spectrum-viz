@@ -268,8 +268,8 @@ function Index() {
               {/* Feedback */}
               <Card className="animate-fade-in-up" style={{ boxShadow: "var(--shadow-card)" }}>
                 <CardHeader>
-                  <CardTitle>Responsibility Feedback</CardTitle>
-                  <CardDescription>LLM-style insights on your experience.</CardDescription>
+                  <CardTitle>Roles & Responsibilities</CardTitle>
+                  <CardDescription>Market-aligned expectations for your level.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ul className="space-y-3">
