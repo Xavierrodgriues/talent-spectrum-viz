@@ -110,6 +110,24 @@ const ROLE_PROFILES: Record<
       "Migrated legacy on-prem applications to cloud-native containerized services.",
     ],
   },
+  "AI/ML Engineer": {
+    skills: ["AWS / Azure / GCP", "Terraform", "Networking", "Security", "Kubernetes", "Linux"],
+    covered: ["Cloud resource provisioning", "IAM basics", "Container deployments"],
+    gaps: ["Multi-cloud architecture", "Advanced cost optimization", "Zero-trust network design"],
+    feedbackBase: [
+      "Solid understanding of core cloud services and infrastructure.",
+      "Experience could deepen in multi-region high availability design.",
+      "Expected ownership of cloud security posture and cost efficiency.",
+    ],
+    bullets: [
+      "Architected and deployed highly available infrastructure across 3 cloud regions.",
+      "Implemented security best practices reducing IAM vulnerabilities by 80%.",
+      "Automated infrastructure provisioning with Terraform and CI/CD pipelines.",
+      "Optimized cloud architecture, reducing monthly spend by 30%.",
+      "Designed resilient networking topologies with VPCs, VPNs, and WAFs.",
+      "Migrated legacy on-prem applications to cloud-native containerized services.",
+    ],
+  },
 };
 
 const DEFAULT_PROFILE = ROLE_PROFILES["Backend Engineer"];
